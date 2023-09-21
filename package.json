@@ -1,0 +1,18 @@
+{
+  "name": "termicards",
+  "version": "1.0.0",
+  "description": "Different card games for the terminal",
+  "author": "Melvin Otieno",
+  "license": "MIT",
+  "type": "module",
+  "module": "bin/game.ts",
+  "scripts": {
+    "start": "bun run bin/game.ts"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
