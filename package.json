@@ -1,18 +1,25 @@
 {
   "name": "termicards",
   "version": "1.0.0",
-  "description": "Different card games for the terminal",
+  "description": "Different card games for the terminal.",
   "author": "Melvin Otieno",
   "license": "MIT",
   "type": "module",
-  "module": "bin/game.ts",
+  "module": "bin/main.ts",
   "scripts": {
-    "start": "bun run bin/game.ts"
+    "start": "bun run bin/main.ts",
+    "bundle": "bun build bin/main.ts --compile --outfile termicards"
+  },
+  "dependencies": {
+    "@inquirer/select": "^4.0.10",
+    "chalk": "^5.4.1",
+    "figlet": "^1.8.0"
   },
   "devDependencies": {
-    "bun-types": "latest"
+    "@types/bun": "latest",
+    "@types/figlet": "^1.7.0"
   },
   "peerDependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "^5.7.2"
   }
 }
