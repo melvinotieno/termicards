@@ -3,7 +3,7 @@
  */
 export enum Suit {
   SPADES = "♠️",
-  HEARTS = "♥",
+  HEARTS = "❤️",
   CLUBS = "♣️",
   DIAMONDS = "♦️",
 }
@@ -33,13 +33,15 @@ export enum Rank {
 export class Card {
   /**
    * Creates an instance of a card.
-   * @param suit - The suit of the card.
+   *
    * @param rank - The rank of the card.
+   * @param suit - The suit of the card.
    */
-  constructor(public readonly suit: Suit, public readonly rank: Rank) {}
+  constructor(public readonly rank: Rank, public readonly suit: Suit) {}
 
   /**
    * Returns the color of the card's suit.
+   *
    * @returns The color of the suit as either "red" or "black".
    */
   getColor(): string {
@@ -49,7 +51,18 @@ export class Card {
   }
 
   /**
+   * Checks if this card is equal to another card.
+   *
+   * @param other - The other card to compare with.
+   * @returns True if both cards have the same suit and rank, otherwise false.
+   */
+  equals(other: Card): boolean {
+    return this.suit === other.suit && this.rank === other.rank;
+  }
+
+  /**
    * Returns a string representation of the card.
+   *
    * @returns A string in the format of "{rank}{suit}".
    */
   toString(): string {
