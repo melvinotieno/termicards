@@ -34,5 +34,5 @@ export abstract class Game {
   /**
    * Starts the game.
    */
-  abstract play(): void;
+  abstract play(): Promise<void>;
 }

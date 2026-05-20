@@ -2,36 +2,30 @@ import select, { Separator } from "@inquirer/select";
 import chalk from "chalk";
 import figlet from "figlet";
 
-const choices = [
+const games = [
   {
     name: "Crazy Eights",
     value: "crazy_eights",
     description: "The classic game where eights are wild.",
   },
   new Separator(),
-  {
-    name: "Exit",
-    value: "exit",
-  },
+  { name: "Back", value: "back" },
 ];
 
-/**
- * Display the menu and start the selected game.
- */
-async function menu() {
+async function selectGame() {
   const answer = await select({
-    message: "Which game would you like to play?",
-    choices: choices,
+    message: "Select a game:",
+    choices: games,
   });
 
-  if (answer === "exit") return;
+  if (answer === "back") return;
 
   try {
     const module = await import(`@/${answer}`);
 
     if (module.default) {
       const game = new module.default();
-      game.play();
+      await game.play();
     } else {
       throw new Error("Game not implemented");
     }
@@ -40,15 +34,29 @@ async function menu() {
   }
 }
 
-/**
- * Main entry point for the application.
- */
+async function mainMenu() {
+  while (true) {
+    const answer = await select({
+      message: "What would you like to do?",
+      choices: [
+        { name: "New Game", value: "new_game" },
+        new Separator(),
+        { name: "Exit", value: "exit" },
+      ],
+    });
+
+    if (answer === "exit") break;
+
+    await selectGame();
+  }
+}
+
 function main() {
-  let title = "TermiCards";
+  const title = "TermiCards";
 
   figlet(title, (_, result) => {
     console.log(chalk.yellow(result ?? title));
-    menu();
+    mainMenu();
   });
 }
 
