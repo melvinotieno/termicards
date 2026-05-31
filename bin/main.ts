@@ -8,6 +8,11 @@ const games = [
     value: "crazy_eights",
     description: "The classic game where eights are wild.",
   },
+  {
+    name: "Spades",
+    value: "spades",
+    description: "Trick-taking game where spades are always trump.",
+  },
   new Separator(),
   { name: "Back", value: "back" },
 ];
