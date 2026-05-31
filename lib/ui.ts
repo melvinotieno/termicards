@@ -67,6 +67,16 @@ export function renderBacks(count: number): string {
   return joinCards(Array.from({ length: display }, () => renderCardBack()));
 }
 
+export function renderCardPlaceholder(): string[] {
+  return [
+    chalk.dim("┌─────┐"),
+    chalk.dim("│     │"),
+    chalk.dim("│  ?  │"),
+    chalk.dim("│     │"),
+    chalk.dim("└─────┘"),
+  ];
+}
+
 function joinCards(lines: string[][]): string {
   return Array.from({ length: CARD_HEIGHT }, (_, row) =>
     lines.map((cols) => cols[row]).join(GAP)
