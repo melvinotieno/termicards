@@ -2,6 +2,13 @@ import select, { Separator } from "@inquirer/select";
 import chalk from "chalk";
 import { Game } from "./game";
 import { Card, Rank, Suit } from "./entities/card";
+import {
+  formatCardInline,
+  renderCard,
+  renderBacks,
+  renderHand,
+  SUIT_LABELS,
+} from "./ui";
 
 const SCORE: Partial<Record<Rank, number>> = {
   [Rank.EIGHT]: 50,
@@ -70,30 +77,36 @@ export default class CrazyEights extends Game {
   }
 
   private displayState(): void {
-    const bar = chalk.dim("─".repeat(52));
+    const bar = chalk.dim("─".repeat(60));
     const top = this.discardPile[this.discardPile.length - 1];
     const suitNote =
       top.rank === Rank.EIGHT
-        ? chalk.cyan(` (declared: ${this.currentSuit})`)
+        ? chalk.cyan(`  declared: ${SUIT_LABELS[this.currentSuit]}`)
         : "";
 
     console.log(`\n${bar}`);
-    console.log(
-      `  Computer: ${chalk.dim("■ ".repeat(this.computerHand.length).trimEnd())}  (${this.computerHand.length})`
-    );
+
+    console.log(`\n  Computer (${this.computerHand.length} cards):`);
+    for (const line of renderBacks(this.computerHand.length).split("\n")) {
+      console.log(`  ${line}`);
+    }
+
     console.log();
     console.log(
-      `  Discard: ${this.formatCard(top)}${suitNote}    Stock: ${this.deck.length}`
+      `  Discard:${suitNote}   ${chalk.dim(`Stock: ${this.deck.length}`)}`
     );
+    for (const line of renderCard(top)) {
+      console.log(`  ${line}`);
+    }
+
     console.log();
-    console.log(
-      `  Your hand:  ${this.playerHand
-        .map((c) =>
-          this.isValidPlay(c) ? this.formatCard(c) : chalk.dim(this.formatCard(c))
-        )
-        .join("   ")}`
-    );
-    console.log(bar);
+    console.log("  Your hand:");
+    const validMask = this.playerHand.map((c) => this.isValidPlay(c));
+    for (const line of renderHand(this.playerHand, validMask).split("\n")) {
+      console.log(`  ${line}`);
+    }
+
+    console.log(`\n${bar}\n`);
   }
 
   private async playerTurn(): Promise<void> {
@@ -113,7 +126,7 @@ export default class CrazyEights extends Game {
       while (this.deck.length > 0) {
         const drawn = this.deck.draw();
         this.playerHand.push(drawn);
-        console.log(`  You drew: ${this.formatCard(drawn)}`);
+        console.log(`  You drew: ${formatCardInline(drawn)}`);
         await this.pause(200);
 
         if (this.isValidPlay(drawn)) {
@@ -132,9 +145,7 @@ export default class CrazyEights extends Game {
 
     const choices: Array<SelectChoice<TurnChoice> | Separator> =
       this.playerHand.map((card, i) => ({
-        name: this.isValidPlay(card)
-          ? this.formatCard(card)
-          : chalk.dim(this.formatCard(card)),
+        name: formatCardInline(card),
         value: { action: "play" as const, index: i },
         disabled: !this.isValidPlay(card),
       }));
@@ -155,7 +166,7 @@ export default class CrazyEights extends Game {
     if (choice.action === "draw") {
       const drawn = this.deck.draw();
       this.playerHand.push(drawn);
-      console.log(`\n  You drew: ${this.formatCard(drawn)}\n`);
+      console.log(`\n  You drew: ${formatCardInline(drawn)}\n`);
       return;
     }
 
@@ -215,7 +226,7 @@ export default class CrazyEights extends Game {
         suit = await select({
           message: "Choose a suit:",
           choices: Object.values(Suit).map((s) => ({
-            name: s,
+            name: SUIT_LABELS[s as Suit],
             value: s as Suit,
           })),
         });
@@ -227,12 +238,12 @@ export default class CrazyEights extends Game {
       this.discardPile.push(card);
       this.currentSuit = suit;
       console.log(
-        `\n  ${actor} played ${this.formatCard(card)} — declared suit: ${suit}\n`
+        `\n  ${actor} played ${formatCardInline(card)} — declared suit: ${SUIT_LABELS[suit]}\n`
       );
     } else {
       this.discardPile.push(card);
       this.currentSuit = card.suit;
-      console.log(`\n  ${actor} played ${this.formatCard(card)}\n`);
+      console.log(`\n  ${actor} played ${formatCardInline(card)}\n`);
     }
   }
 
@@ -262,11 +273,6 @@ export default class CrazyEights extends Game {
 
   private cardValue(card: Card): number {
     return SCORE[card.rank] ?? parseInt(card.rank, 10);
-  }
-
-  private formatCard(card: Card): string {
-    const s = card.toString();
-    return card.getColor() === "red" ? chalk.red(s) : chalk.white(s);
   }
 
   private pause(ms: number): Promise<void> {
