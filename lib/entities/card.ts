@@ -2,10 +2,10 @@
  * Represents the four suits in a standard deck of cards.
  */
 export enum Suit {
-  SPADES = "♠️",
-  HEARTS = "❤️",
-  CLUBS = "♣️",
-  DIAMONDS = "♦️",
+  SPADES = "♠",
+  HEARTS = "♥",
+  CLUBS = "♣",
+  DIAMONDS = "♦",
 }
 
 /**
