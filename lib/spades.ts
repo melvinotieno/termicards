@@ -1,4 +1,4 @@
-import select from "@inquirer/select";
+import select, { Separator } from "@inquirer/select";
 import chalk from "chalk";
 import { Game } from "./game";
 import { Card, Rank, Suit } from "./entities/card";
@@ -10,6 +10,14 @@ import {
   renderBacks,
   renderHand,
 } from "./ui";
+import {
+  readSave,
+  writeSave,
+  deleteSave,
+  serializeCards,
+  deserializeCards,
+  type SerializedCard,
+} from "./save";
 
 const RANK_VALUE: Record<Rank, number> = {
   [Rank.TWO]: 2,
@@ -31,6 +39,22 @@ const SUIT_ORDER = [Suit.SPADES, Suit.HEARTS, Suit.DIAMONDS, Suit.CLUBS];
 const CARD_W = 7;
 const CARD_GAP = "  ";
 
+interface SpadesState {
+  playerHand: SerializedCard[];
+  computerHand: SerializedCard[];
+  playerScore: number;
+  computerScore: number;
+  playerBags: number;
+  computerBags: number;
+  playerBid: number;
+  computerBid: number;
+  playerTricks: number;
+  computerTricks: number;
+  spadesBroken: boolean;
+  targetScore: number;
+  dealerIsComputer: boolean;
+}
+
 export default class Spades extends Game {
   private playerScore = 0;
   private computerScore = 0;
@@ -43,30 +67,73 @@ export default class Spades extends Game {
   private spadesBroken = false;
   private targetScore = 200;
   private dealerIsComputer = false;
+  private quitting = false;
 
   constructor() {
     super("Spades");
   }
 
+  // ── Entry point ──────────────────────────────────────────────────────────
+
   async play(): Promise<void> {
+    const saved = await readSave<SpadesState>("spades");
+
+    if (saved) {
+      const date = new Date(saved.savedAt).toLocaleString();
+      const resume = await select<boolean>({
+        message: `Saved Spades game found (${date}):`,
+        choices: [
+          { name: "Continue saved game", value: true },
+          { name: "Start new game", value: false },
+        ],
+      });
+
+      if (resume) {
+        this.restoreState(saved.state);
+        console.log(
+          chalk.bold.green(
+            `\n  Resuming Spades! Target: ${this.targetScore} points\n`
+          )
+        );
+        await this.runGameLoop(true);
+        return;
+      }
+
+      await deleteSave("spades");
+    }
+
     this.targetScore = await this.selectTarget();
     this.dealerIsComputer = await this.highCardDraw();
-
     console.log(
       chalk.bold.green(
         `\n  Starting ${this.title}! Target: ${this.targetScore} points\n`
       )
     );
+    await this.runGameLoop(false);
+  }
 
-    while (
-      this.playerScore < this.targetScore &&
-      this.computerScore < this.targetScore
-    ) {
-      await this.playHand();
+  // ── Game loop ────────────────────────────────────────────────────────────
+
+  private async runGameLoop(resuming: boolean): Promise<void> {
+    if (resuming) {
+      await this.playHand(true);
+      if (this.quitting) return;
       this.dealerIsComputer = !this.dealerIsComputer;
     }
 
-    // Tiebreaker: both hit target in the same hand
+    while (
+      !this.quitting &&
+      this.playerScore < this.targetScore &&
+      this.computerScore < this.targetScore
+    ) {
+      await this.playHand(false);
+      if (this.quitting) return;
+      this.dealerIsComputer = !this.dealerIsComputer;
+    }
+
+    if (this.quitting) return;
+
+    // Tiebreaker: both crossed target in the same hand
     while (
       this.playerScore >= this.targetScore &&
       this.computerScore >= this.targetScore
@@ -74,9 +141,12 @@ export default class Spades extends Game {
       console.log(
         chalk.yellow("\n  Tied at the target! Playing one more hand...\n")
       );
-      await this.playHand();
+      await this.playHand(false);
+      if (this.quitting) return;
       this.dealerIsComputer = !this.dealerIsComputer;
     }
+
+    await deleteSave("spades");
 
     if (this.playerScore > this.computerScore) {
       console.log(
@@ -135,28 +205,33 @@ export default class Spades extends Game {
 
   // ── Hand lifecycle ───────────────────────────────────────────────────────
 
-  private async playHand(): Promise<void> {
-    this.deck = new Deck();
-    this.deck.shuffle();
-    const { player, computer } = this.deck.deal(13);
-    this.playerHand = player;
-    this.computerHand = computer;
-    this.playerTricks = 0;
-    this.computerTricks = 0;
-    this.spadesBroken = false;
-
-    this.sortHand(this.playerHand);
-    this.sortHand(this.computerHand);
-
-    await this.biddingPhase();
-
-    // non-dealer leads first
-    let leader = this.dealerIsComputer ? 0 : 1;
-    for (let i = 0; i < 13; i++) {
-      leader = await this.playTrick(leader);
+  private async playHand(resuming: boolean): Promise<void> {
+    if (!resuming) {
+      this.deck = new Deck();
+      this.deck.shuffle();
+      const { player, computer } = this.deck.deal(13);
+      this.playerHand = player;
+      this.computerHand = computer;
+      this.playerTricks = 0;
+      this.computerTricks = 0;
+      this.spadesBroken = false;
+      this.sortHand(this.playerHand);
+      this.sortHand(this.computerHand);
+      await this.biddingPhase();
     }
 
-    await this.scoreHand();
+    // When resuming, we always saved at playerLeads, so player leads next
+    let leader = resuming ? 0 : (this.dealerIsComputer ? 0 : 1);
+    const remaining = 13 - (this.playerTricks + this.computerTricks);
+
+    for (let i = 0; i < remaining; i++) {
+      leader = await this.playTrick(leader);
+      if (this.quitting) return;
+    }
+
+    if (!this.quitting) {
+      await this.scoreHand();
+    }
   }
 
   // ── Bidding ──────────────────────────────────────────────────────────────
@@ -221,7 +296,9 @@ export default class Spades extends Game {
     if (leader === 0) {
       // Player leads
       this.displayBoard();
-      playerCard = await this.playerLeads();
+      const led = await this.playerLeads();
+      if (led === null) return 0; // quitting — value unused
+      playerCard = led;
       ledSuit = playerCard.suit;
       if (playerCard.suit === Suit.SPADES) this.spadesBroken = true;
 
@@ -263,21 +340,35 @@ export default class Spades extends Game {
 
   // ── Player actions ───────────────────────────────────────────────────────
 
-  private async playerLeads(): Promise<Card> {
+  private async playerLeads(): Promise<Card | null> {
     const canLeadSpades =
       this.spadesBroken ||
       this.playerHand.every((c) => c.suit === Suit.SPADES);
 
-    const choices = this.playerHand.map((card, i) => ({
-      name: formatCardInline(card),
-      value: i,
-      disabled:
-        !canLeadSpades && card.suit === Suit.SPADES
-          ? "Spades not broken yet"
-          : (false as const),
-    }));
+    const choices: Array<
+      | { name: string; value: number; disabled?: string | false }
+      | Separator
+    > = [
+      ...this.playerHand.map((card, i) => ({
+        name: formatCardInline(card),
+        value: i,
+        disabled:
+          !canLeadSpades && card.suit === Suit.SPADES
+            ? ("Spades not broken yet" as string)
+            : (false as const),
+      })),
+      new Separator(),
+      { name: "Save and quit", value: -1 },
+    ];
 
     const idx = await select<number>({ message: "Lead a card:", choices });
+
+    if (idx === -1) {
+      await this.saveState();
+      this.quitting = true;
+      return null;
+    }
+
     return this.playerHand.splice(idx, 1)[0];
   }
 
@@ -312,7 +403,6 @@ export default class Spades extends Game {
       : this.computerHand.filter((c) => c.suit !== Suit.SPADES);
     if (pool.length === 0) pool = [...this.computerHand];
 
-    // Lead highest non-spade to preserve trumps; fall back to highest spade
     const nonSpades = pool
       .filter((c) => c.suit !== Suit.SPADES)
       .sort((a, b) => RANK_VALUE[b.rank] - RANK_VALUE[a.rank]);
@@ -337,7 +427,6 @@ export default class Spades extends Game {
       return pick;
     }
 
-    // Can't follow — trump if still needs tricks
     if (tricksNeeded > 0) {
       const spades = this.computerHand
         .filter((c) => c.suit === Suit.SPADES)
@@ -348,7 +437,6 @@ export default class Spades extends Game {
       }
     }
 
-    // Discard lowest value card
     const lowest = [...this.computerHand].sort(
       (a, b) => RANK_VALUE[a.rank] - RANK_VALUE[b.rank]
     )[0];
@@ -374,7 +462,6 @@ export default class Spades extends Game {
         : "computer";
     }
 
-    // No spades played
     const pFollowed = playerCard.suit === ledSuit;
     const cFollowed = computerCard.suit === ledSuit;
     if (pFollowed && !cFollowed) return "player";
@@ -450,7 +537,45 @@ export default class Spades extends Game {
     }
   }
 
-  // ── Utilities ────────────────────────────────────────────────────────────
+  // ── Save / restore ───────────────────────────────────────────────────────
+
+  private async saveState(): Promise<void> {
+    const state: SpadesState = {
+      playerHand: serializeCards(this.playerHand),
+      computerHand: serializeCards(this.computerHand),
+      playerScore: this.playerScore,
+      computerScore: this.computerScore,
+      playerBags: this.playerBags,
+      computerBags: this.computerBags,
+      playerBid: this.playerBid,
+      computerBid: this.computerBid,
+      playerTricks: this.playerTricks,
+      computerTricks: this.computerTricks,
+      spadesBroken: this.spadesBroken,
+      targetScore: this.targetScore,
+      dealerIsComputer: this.dealerIsComputer,
+    };
+    await writeSave("spades", state);
+    console.log(chalk.green("\n  Game saved! See you next time.\n"));
+  }
+
+  private restoreState(state: SpadesState): void {
+    this.playerHand = deserializeCards(state.playerHand);
+    this.computerHand = deserializeCards(state.computerHand);
+    this.playerScore = state.playerScore;
+    this.computerScore = state.computerScore;
+    this.playerBags = state.playerBags;
+    this.computerBags = state.computerBags;
+    this.playerBid = state.playerBid;
+    this.computerBid = state.computerBid;
+    this.playerTricks = state.playerTricks;
+    this.computerTricks = state.computerTricks;
+    this.spadesBroken = state.spadesBroken;
+    this.targetScore = state.targetScore;
+    this.dealerIsComputer = state.dealerIsComputer;
+  }
+
+  // ── Display ──────────────────────────────────────────────────────────────
 
   private displayBoard(trick?: { computerCard?: Card; playerCard?: Card }): void {
     const bar = chalk.dim("─".repeat(60));
@@ -484,11 +609,8 @@ export default class Spades extends Game {
         ? renderCard(trick.playerCard)
         : renderCardPlaceholder();
 
-      // Header labels aligned over each card column
       const labelLine =
-        "  " +
-        "Computer".padEnd(CARD_W + CARD_GAP.length) +
-        "You";
+        "  " + "Computer".padEnd(CARD_W + CARD_GAP.length) + "You";
       console.log(`\n${labelLine}`);
       for (let i = 0; i < 5; i++) {
         console.log(`  ${cLines[i]}${CARD_GAP}${pLines[i]}`);
@@ -502,6 +624,8 @@ export default class Spades extends Game {
 
     console.log(`\n${bar}\n`);
   }
+
+  // ── Utilities ────────────────────────────────────────────────────────────
 
   private sortHand(hand: Card[]): void {
     hand.sort((a, b) => {
