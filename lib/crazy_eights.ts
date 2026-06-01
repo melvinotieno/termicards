@@ -9,6 +9,14 @@ import {
   renderHand,
   SUIT_LABELS,
 } from "./ui";
+import {
+  readSave,
+  writeSave,
+  deleteSave,
+  serializeCards,
+  deserializeCards,
+  type SerializedCard,
+} from "./save";
 
 const SCORE: Partial<Record<Rank, number>> = {
   [Rank.EIGHT]: 50,
@@ -19,20 +27,55 @@ const SCORE: Partial<Record<Rank, number>> = {
   [Rank.ACE]: 1,
 };
 
-type TurnChoice = { action: "play"; index: number } | { action: "draw"; index: -1 };
+interface CrazyEightsState {
+  playerHand: SerializedCard[];
+  computerHand: SerializedCard[];
+  discardPile: SerializedCard[];
+  deckCards: SerializedCard[];
+  currentSuit: string;
+}
+
+type TurnChoice =
+  | { action: "play"; index: number }
+  | { action: "draw"; index: -1 }
+  | { action: "save"; index: -1 };
+
 type SelectChoice<T> = { value: T; name?: string; disabled?: boolean | string };
 
 export default class CrazyEights extends Game {
   private discardPile: Card[] = [];
   private currentSuit: Suit = Suit.SPADES;
+  private quitting = false;
 
   constructor() {
     super("Crazy Eights");
   }
 
   async play(): Promise<void> {
-    this.setup();
-    console.log(chalk.bold.green(`\n  Starting ${this.title}!\n`));
+    const saved = await readSave<CrazyEightsState>("crazy_eights");
+
+    if (saved) {
+      const date = new Date(saved.savedAt).toLocaleString();
+      const resume = await select<boolean>({
+        message: `Saved Crazy Eights game found (${date}):`,
+        choices: [
+          { name: "Continue saved game", value: true },
+          { name: "Start new game", value: false },
+        ],
+      });
+
+      if (resume) {
+        this.restoreState(saved.state);
+        console.log(chalk.bold.green("\n  Resuming Crazy Eights!\n"));
+      } else {
+        await deleteSave("crazy_eights");
+        this.setup();
+        console.log(chalk.bold.green(`\n  Starting ${this.title}!\n`));
+      }
+    } else {
+      this.setup();
+      console.log(chalk.bold.green(`\n  Starting ${this.title}!\n`));
+    }
 
     while (true) {
       this.displayState();
@@ -43,15 +86,19 @@ export default class CrazyEights extends Game {
         await this.computerTurn();
       }
 
+      if (this.quitting) break;
+
       if (this.playerHand.length === 0) {
         const score = this.calculateScore(this.computerHand);
         console.log(chalk.bold.green(`\n  You win! You score ${score} points!\n`));
+        await deleteSave("crazy_eights");
         break;
       }
 
       if (this.computerHand.length === 0) {
         const score = this.calculateScore(this.playerHand);
         console.log(chalk.bold.red(`\n  Computer wins! Computer scores ${score} points.\n`));
+        await deleteSave("crazy_eights");
         break;
       }
 
@@ -158,10 +205,22 @@ export default class CrazyEights extends Game {
       });
     }
 
+    choices.push(new Separator());
+    choices.push({
+      name: "Save and quit",
+      value: { action: "save" as const, index: -1 as const },
+    });
+
     const choice = await select<TurnChoice>({
       message: "Your turn:",
       choices,
     });
+
+    if (choice.action === "save") {
+      await this.saveState();
+      this.quitting = true;
+      return;
+    }
 
     if (choice.action === "draw") {
       const drawn = this.deck.draw();
@@ -273,6 +332,27 @@ export default class CrazyEights extends Game {
 
   private cardValue(card: Card): number {
     return SCORE[card.rank] ?? parseInt(card.rank, 10);
+  }
+
+  private async saveState(): Promise<void> {
+    const state: CrazyEightsState = {
+      playerHand: serializeCards(this.playerHand),
+      computerHand: serializeCards(this.computerHand),
+      discardPile: serializeCards(this.discardPile),
+      deckCards: serializeCards(this.deck.cards),
+      currentSuit: this.currentSuit,
+    };
+    await writeSave("crazy_eights", state);
+    console.log(chalk.green("\n  Game saved! See you next time.\n"));
+  }
+
+  private restoreState(state: CrazyEightsState): void {
+    this.playerHand = deserializeCards(state.playerHand);
+    this.computerHand = deserializeCards(state.computerHand);
+    this.discardPile = deserializeCards(state.discardPile);
+    this.deck.cards.splice(0, this.deck.cards.length, ...deserializeCards(state.deckCards));
+    this.currentSuit = state.currentSuit as Suit;
+    this.currentPlayer = 0;
   }
 
   private pause(ms: number): Promise<void> {
