@@ -1,4 +1,3 @@
-import select, { Separator } from "@inquirer/select";
 import chalk from "chalk";
 import { Game } from "./game";
 import { Card, Rank, Suit } from "./entities/card";
@@ -17,35 +16,39 @@ import {
   deserializeCards,
   type SerializedCard,
 } from "./save";
+import {
+  clearScreen,
+  hideCursor,
+  showCursor,
+  readKey,
+  selectMenu,
+  bar,
+  KEY,
+} from "./tui";
 
 const SCORE: Partial<Record<Rank, number>> = {
   [Rank.EIGHT]: 50,
-  [Rank.KING]: 10,
+  [Rank.KING]:  10,
   [Rank.QUEEN]: 10,
-  [Rank.JACK]: 10,
-  [Rank.TEN]: 10,
-  [Rank.ACE]: 1,
+  [Rank.JACK]:  10,
+  [Rank.TEN]:   10,
+  [Rank.ACE]:    1,
 };
 
 interface CrazyEightsState {
-  playerHand: SerializedCard[];
+  playerHand:  SerializedCard[];
   computerHand: SerializedCard[];
-  discardPile: SerializedCard[];
-  deckCards: SerializedCard[];
-  currentSuit: string;
+  discardPile:  SerializedCard[];
+  deckCards:    SerializedCard[];
+  currentSuit:  string;
 }
-
-type TurnChoice =
-  | { action: "play"; index: number }
-  | { action: "draw"; index: -1 }
-  | { action: "save"; index: -1 };
-
-type SelectChoice<T> = { value: T; name?: string; disabled?: boolean | string };
 
 export default class CrazyEights extends Game {
   private discardPile: Card[] = [];
   private currentSuit: Suit = Suit.SPADES;
   private quitting = false;
+  private message = "";
+  private selectedCard = 0;
 
   constructor() {
     super("Crazy Eights");
@@ -56,30 +59,28 @@ export default class CrazyEights extends Game {
 
     if (saved) {
       const date = new Date(saved.savedAt).toLocaleString();
-      const resume = await select<boolean>({
-        message: `Saved Crazy Eights game found (${date}):`,
-        choices: [
-          { name: "Continue saved game", value: true },
-          { name: "Start new game", value: false },
+      const resume = await selectMenu({
+        title: "TermiCards",
+        subtitle: "Crazy Eights",
+        items: [
+          { name: `Continue  (saved ${date})`, value: "resume" },
+          { name: "Start new game",            value: "new" },
         ],
       });
 
-      if (resume) {
+      if (resume === "resume") {
         this.restoreState(saved.state);
-        console.log(chalk.bold.green("\n  Resuming Crazy Eights!\n"));
       } else {
         await deleteSave("crazy_eights");
         this.setup();
-        console.log(chalk.bold.green(`\n  Starting ${this.title}!\n`));
       }
     } else {
       this.setup();
-      console.log(chalk.bold.green(`\n  Starting ${this.title}!\n`));
     }
 
-    while (true) {
-      this.displayState();
+    hideCursor();
 
+    while (true) {
       if (this.currentPlayer === 0) {
         await this.playerTurn();
       } else {
@@ -90,21 +91,224 @@ export default class CrazyEights extends Game {
 
       if (this.playerHand.length === 0) {
         const score = this.calculateScore(this.computerHand);
-        console.log(chalk.bold.green(`\n  You win! You score ${score} points!\n`));
+        this.message = chalk.bold.green(`You win!  Score: ${score} points  —  press any key`);
+        this.render();
+        await readKey();
         await deleteSave("crazy_eights");
         break;
       }
 
       if (this.computerHand.length === 0) {
         const score = this.calculateScore(this.playerHand);
-        console.log(chalk.bold.red(`\n  Computer wins! Computer scores ${score} points.\n`));
+        this.message = chalk.bold.red(`Computer wins!  Score: ${score} points  —  press any key`);
+        this.render();
+        await readKey();
         await deleteSave("crazy_eights");
         break;
       }
 
       this.currentPlayer = 1 - this.currentPlayer;
     }
+
+    showCursor();
   }
+
+  // ── Rendering ─────────────────────────────────────────────────────────────
+
+  private render(controls?: string): void {
+    clearScreen();
+    const b = bar();
+
+    process.stdout.write(
+      `\n  ${chalk.bold.yellow("TermiCards")} ${chalk.dim("─")} ${chalk.cyan("Crazy Eights")}\n  ${b}\n\n`
+    );
+
+    process.stdout.write(`  ${chalk.dim(`Computer (${this.computerHand.length} cards):`)}\n`);
+    process.stdout.write(renderBacks(this.computerHand.length) + "\n\n");
+
+    const top = this.discardPile[this.discardPile.length - 1];
+    const suitInfo =
+      top.rank === Rank.EIGHT
+        ? chalk.cyan(`declared: ${SUIT_LABELS[this.currentSuit]}`)
+        : chalk.dim(SUIT_LABELS[this.currentSuit]);
+    process.stdout.write(
+      `  Discard: ${suitInfo}   ${chalk.dim(`Stock: ${this.deck.length}`)}\n`
+    );
+    for (const line of renderCard(top)) {
+      process.stdout.write(`  ${line}\n`);
+    }
+
+    process.stdout.write("\n  Your hand:\n");
+    const validMask = this.playerHand.map((c) => this.isValidPlay(c));
+    const cursorIdx = controls !== undefined ? this.selectedCard : undefined;
+    process.stdout.write(renderHand(this.playerHand, validMask, cursorIdx) + "\n");
+
+    process.stdout.write(`\n  ${b}\n`);
+    if (this.message) {
+      process.stdout.write(`  ${this.message}\n  ${b}\n`);
+    }
+    if (controls) {
+      process.stdout.write(`  ${controls}\n`);
+    }
+  }
+
+  // ── Player turn ────────────────────────────────────────────────────────────
+
+  private async playerTurn(): Promise<void> {
+    let mustPlay = false;
+
+    if (!this.playerHand.some((c) => this.isValidPlay(c))) {
+      if (this.deck.length === 0) {
+        this.message = chalk.yellow("No valid plays and stock is empty — you pass");
+        this.render();
+        await this.pause(1500);
+        return;
+      }
+
+      let found = false;
+      while (this.deck.length > 0) {
+        const drawn = this.deck.draw();
+        this.playerHand.push(drawn);
+        this.message = chalk.dim(`Drawing… got ${formatCardInline(drawn)}`);
+        this.render();
+        await this.pause(300);
+        if (this.isValidPlay(drawn)) {
+          found = true;
+          this.selectedCard = this.playerHand.length - 1;
+          break;
+        }
+      }
+
+      if (!found) {
+        this.message = chalk.yellow("Stock exhausted — you pass");
+        this.render();
+        await this.pause(1500);
+        return;
+      }
+
+      mustPlay = true;
+    }
+
+    const hasDraw = !mustPlay && this.deck.length > 0;
+    this.clampCursor();
+
+    for (;;) {
+      this.render(this.controlsLine(hasDraw));
+      const key = await readKey();
+
+      if (key === KEY.LEFT) {
+        this.selectedCard = Math.max(0, this.selectedCard - 1);
+      } else if (key === KEY.RIGHT) {
+        this.selectedCard = Math.min(this.playerHand.length - 1, this.selectedCard + 1);
+      } else if (key === KEY.ENTER || key === " ") {
+        const card = this.playerHand[this.selectedCard];
+        if (!this.isValidPlay(card)) {
+          this.message = chalk.red("That card can't be played here — dimmed cards are invalid");
+          continue;
+        }
+        this.playerHand.splice(this.selectedCard, 1);
+        this.clampCursor();
+        await this.resolvePlay(card, this.playerHand, true);
+        return;
+      } else if ((key === "d" || key === "D") && hasDraw) {
+        const drawn = this.deck.draw();
+        this.playerHand.push(drawn);
+        this.selectedCard = this.playerHand.length - 1;
+        this.message = `Drew: ${formatCardInline(drawn)}`;
+        return;
+      } else if (key === "s" || key === "S") {
+        await this.saveState();
+        this.quitting = true;
+        return;
+      }
+    }
+  }
+
+  // ── Computer turn ──────────────────────────────────────────────────────────
+
+  private async computerTurn(): Promise<void> {
+    this.message = chalk.dim("Computer is thinking…");
+    this.render();
+    await this.pause(700);
+
+    let valid = this.computerHand.filter((c) => this.isValidPlay(c));
+
+    if (valid.length === 0) {
+      if (this.deck.length === 0) {
+        this.message = chalk.dim("Computer passes.");
+        this.render();
+        await this.pause(1000);
+        return;
+      }
+
+      while (this.deck.length > 0) {
+        const drawn = this.deck.draw();
+        this.computerHand.push(drawn);
+        this.message = chalk.dim("Computer drew a card.");
+        this.render();
+        await this.pause(400);
+        if (this.isValidPlay(drawn)) {
+          valid = [drawn];
+          break;
+        }
+      }
+
+      if (valid.length === 0) {
+        this.message = chalk.dim("Stock exhausted — computer passes.");
+        this.render();
+        await this.pause(1000);
+        return;
+      }
+    }
+
+    const nonEights = valid.filter((c) => c.rank !== Rank.EIGHT);
+    const pick = nonEights.length > 0 ? nonEights[0] : valid[0];
+    this.computerHand.splice(this.computerHand.indexOf(pick), 1);
+    await this.resolvePlay(pick, this.computerHand, false);
+
+    this.render();
+    await this.pause(900);
+  }
+
+  // ── Resolve a card play ────────────────────────────────────────────────────
+
+  private async resolvePlay(card: Card, hand: Card[], isPlayer: boolean): Promise<void> {
+    const actor = isPlayer ? "You" : "Computer";
+
+    if (card.rank === Rank.EIGHT) {
+      let suit: Suit;
+      if (isPlayer) {
+        suit = await this.chooseSuit();
+        hideCursor();
+      } else {
+        suit = this.bestSuitFor(hand);
+        await this.pause(500);
+      }
+      this.discardPile.push(card);
+      this.currentSuit = suit;
+      this.message = `${actor} played ${formatCardInline(card)} — declared ${SUIT_LABELS[suit]}`;
+    } else {
+      this.discardPile.push(card);
+      this.currentSuit = card.suit;
+      this.message = `${actor} played ${formatCardInline(card)}`;
+    }
+  }
+
+  // ── Suit chooser ───────────────────────────────────────────────────────────
+
+  private async chooseSuit(): Promise<Suit> {
+    const answer = await selectMenu({
+      title: "TermiCards",
+      subtitle: "Crazy Eights — Choose a Suit",
+      items: Object.values(Suit).map((s) => ({
+        name: SUIT_LABELS[s as Suit],
+        value: s as string,
+      })),
+    });
+    return answer as Suit;
+  }
+
+  // ── Game logic ─────────────────────────────────────────────────────────────
 
   private setup(): void {
     this.deck.shuffle();
@@ -123,189 +327,6 @@ export default class CrazyEights extends Game {
     this.currentSuit = starter.suit;
   }
 
-  private displayState(): void {
-    const bar = chalk.dim("─".repeat(60));
-    const top = this.discardPile[this.discardPile.length - 1];
-    const suitNote =
-      top.rank === Rank.EIGHT
-        ? chalk.cyan(`  declared: ${SUIT_LABELS[this.currentSuit]}`)
-        : "";
-
-    console.log(`\n${bar}`);
-
-    console.log(`\n  Computer (${this.computerHand.length} cards):`);
-    for (const line of renderBacks(this.computerHand.length).split("\n")) {
-      console.log(`  ${line}`);
-    }
-
-    console.log();
-    console.log(
-      `  Discard:${suitNote}   ${chalk.dim(`Stock: ${this.deck.length}`)}`
-    );
-    for (const line of renderCard(top)) {
-      console.log(`  ${line}`);
-    }
-
-    console.log();
-    console.log("  Your hand:");
-    const validMask = this.playerHand.map((c) => this.isValidPlay(c));
-    for (const line of renderHand(this.playerHand, validMask).split("\n")) {
-      console.log(`  ${line}`);
-    }
-
-    console.log(`\n${bar}\n`);
-  }
-
-  private async playerTurn(): Promise<void> {
-    let mustPlay = false;
-
-    if (!this.playerHand.some((c) => this.isValidPlay(c))) {
-      if (this.deck.length === 0) {
-        console.log(
-          chalk.yellow("\n  No valid plays and stock is empty. You pass.\n")
-        );
-        return;
-      }
-
-      console.log(chalk.yellow("\n  No valid plays — drawing...\n"));
-
-      let found = false;
-      while (this.deck.length > 0) {
-        const drawn = this.deck.draw();
-        this.playerHand.push(drawn);
-        console.log(`  You drew: ${formatCardInline(drawn)}`);
-        await this.pause(200);
-
-        if (this.isValidPlay(drawn)) {
-          found = true;
-          break;
-        }
-      }
-
-      if (!found) {
-        console.log(chalk.yellow("\n  Stock exhausted. You pass.\n"));
-        return;
-      }
-
-      mustPlay = true;
-    }
-
-    const choices: Array<SelectChoice<TurnChoice> | Separator> =
-      this.playerHand.map((card, i) => ({
-        name: formatCardInline(card),
-        value: { action: "play" as const, index: i },
-        disabled: !this.isValidPlay(card),
-      }));
-
-    if (!mustPlay && this.deck.length > 0) {
-      choices.push(new Separator());
-      choices.push({
-        name: "Draw a card",
-        value: { action: "draw" as const, index: -1 as const },
-      });
-    }
-
-    choices.push(new Separator());
-    choices.push({
-      name: "Save and quit",
-      value: { action: "save" as const, index: -1 as const },
-    });
-
-    const choice = await select<TurnChoice>({
-      message: "Your turn:",
-      choices,
-    });
-
-    if (choice.action === "save") {
-      await this.saveState();
-      this.quitting = true;
-      return;
-    }
-
-    if (choice.action === "draw") {
-      const drawn = this.deck.draw();
-      this.playerHand.push(drawn);
-      console.log(`\n  You drew: ${formatCardInline(drawn)}\n`);
-      return;
-    }
-
-    const card = this.playerHand.splice(choice.index, 1)[0];
-    await this.resolvePlay(card, this.playerHand, true);
-  }
-
-  private async computerTurn(): Promise<void> {
-    console.log(chalk.cyan("\n  Computer's turn...\n"));
-    await this.pause(700);
-
-    let valid = this.computerHand.filter((c) => this.isValidPlay(c));
-
-    if (valid.length === 0) {
-      if (this.deck.length === 0) {
-        console.log(chalk.cyan("  Computer passes.\n"));
-        return;
-      }
-
-      while (this.deck.length > 0) {
-        const drawn = this.deck.draw();
-        this.computerHand.push(drawn);
-        console.log(chalk.dim("  Computer drew a card."));
-        await this.pause(400);
-
-        if (this.isValidPlay(drawn)) {
-          valid = [drawn];
-          break;
-        }
-      }
-
-      if (valid.length === 0) {
-        console.log(chalk.cyan("  Stock exhausted. Computer passes.\n"));
-        return;
-      }
-    }
-
-    // Prefer non-eights; save eights as last resort
-    const nonEights = valid.filter((c) => c.rank !== Rank.EIGHT);
-    const pick = nonEights.length > 0 ? nonEights[0] : valid[0];
-
-    this.computerHand.splice(this.computerHand.indexOf(pick), 1);
-    await this.resolvePlay(pick, this.computerHand, false);
-  }
-
-  private async resolvePlay(
-    card: Card,
-    hand: Card[],
-    isPlayer: boolean
-  ): Promise<void> {
-    const actor = isPlayer ? "You" : "Computer";
-
-    if (card.rank === Rank.EIGHT) {
-      let suit: Suit;
-
-      if (isPlayer) {
-        suit = await select({
-          message: "Choose a suit:",
-          choices: Object.values(Suit).map((s) => ({
-            name: SUIT_LABELS[s as Suit],
-            value: s as Suit,
-          })),
-        });
-      } else {
-        suit = this.bestSuitFor(hand);
-        await this.pause(500);
-      }
-
-      this.discardPile.push(card);
-      this.currentSuit = suit;
-      console.log(
-        `\n  ${actor} played ${formatCardInline(card)} — declared suit: ${SUIT_LABELS[suit]}\n`
-      );
-    } else {
-      this.discardPile.push(card);
-      this.currentSuit = card.suit;
-      console.log(`\n  ${actor} played ${formatCardInline(card)}\n`);
-    }
-  }
-
   private isValidPlay(card: Card): boolean {
     if (card.rank === Rank.EIGHT) return true;
     const top = this.discardPile[this.discardPile.length - 1];
@@ -315,10 +336,7 @@ export default class CrazyEights extends Game {
 
   private bestSuitFor(hand: Card[]): Suit {
     const counts: Record<Suit, number> = {
-      [Suit.SPADES]: 0,
-      [Suit.HEARTS]: 0,
-      [Suit.CLUBS]: 0,
-      [Suit.DIAMONDS]: 0,
+      [Suit.SPADES]: 0, [Suit.HEARTS]: 0, [Suit.CLUBS]: 0, [Suit.DIAMONDS]: 0,
     };
     for (const card of hand) {
       if (card.rank !== Rank.EIGHT) counts[card.suit]++;
@@ -334,28 +352,48 @@ export default class CrazyEights extends Game {
     return SCORE[card.rank] ?? parseInt(card.rank, 10);
   }
 
-  private async saveState(): Promise<void> {
-    const state: CrazyEightsState = {
-      playerHand: serializeCards(this.playerHand),
-      computerHand: serializeCards(this.computerHand),
-      discardPile: serializeCards(this.discardPile),
-      deckCards: serializeCards(this.deck.cards),
-      currentSuit: this.currentSuit,
-    };
-    await writeSave("crazy_eights", state);
-    console.log(chalk.green("\n  Game saved! See you next time.\n"));
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  private controlsLine(canDraw: boolean): string {
+    const parts = [
+      `${chalk.dim("←/→")} Move`,
+      `${chalk.dim("Enter")} Play`,
+    ];
+    if (canDraw) parts.push(`${chalk.dim("D")} Draw`);
+    parts.push(`${chalk.dim("S")} Save & Quit`);
+    return parts.join("   ");
   }
 
-  private restoreState(state: CrazyEightsState): void {
-    this.playerHand = deserializeCards(state.playerHand);
-    this.computerHand = deserializeCards(state.computerHand);
-    this.discardPile = deserializeCards(state.discardPile);
-    this.deck.cards.splice(0, this.deck.cards.length, ...deserializeCards(state.deckCards));
-    this.currentSuit = state.currentSuit as Suit;
-    this.currentPlayer = 0;
+  private clampCursor(): void {
+    this.selectedCard = Math.min(this.selectedCard, Math.max(0, this.playerHand.length - 1));
   }
 
   private pause(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // ── Save / restore ─────────────────────────────────────────────────────────
+
+  private async saveState(): Promise<void> {
+    const state: CrazyEightsState = {
+      playerHand:   serializeCards(this.playerHand),
+      computerHand: serializeCards(this.computerHand),
+      discardPile:  serializeCards(this.discardPile),
+      deckCards:    serializeCards(this.deck.cards),
+      currentSuit:  this.currentSuit,
+    };
+    await writeSave("crazy_eights", state);
+    this.message = chalk.green("Game saved — see you next time");
+    this.render();
+    await this.pause(1200);
+  }
+
+  private restoreState(state: CrazyEightsState): void {
+    this.playerHand   = deserializeCards(state.playerHand);
+    this.computerHand = deserializeCards(state.computerHand);
+    this.discardPile  = deserializeCards(state.discardPile);
+    this.deck.cards.splice(0, this.deck.cards.length, ...deserializeCards(state.deckCards));
+    this.currentSuit  = state.currentSuit as Suit;
+    this.currentPlayer = 0;
   }
 }
