@@ -39,17 +39,13 @@ export function bar(): string {
 export async function readKey(): Promise<string> {
   return new Promise((resolve) => {
     const stdin = process.stdin as NodeJS.ReadStream;
-    if (stdin.isTTY && !stdin.isRaw) {
-      stdin.setRawMode(true);
-      stdin.resume();
-    } else if (!stdin.isTTY) {
-      stdin.resume();
-    }
+    if (stdin.isTTY) stdin.setRawMode(true);
+    stdin.resume();
     stdin.once('data', (data: Buffer) => {
+      stdin.pause();
       const key = data.toString();
       if (key === KEY.CTRL_C) {
-        const s = process.stdin as NodeJS.ReadStream;
-        if (s.isTTY) s.setRawMode(false);
+        if (stdin.isTTY) stdin.setRawMode(false);
         showCursor();
         process.exit(0);
       }
