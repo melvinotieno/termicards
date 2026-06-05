@@ -1,33 +1,24 @@
-import select, { Separator } from "@inquirer/select";
 import chalk from "chalk";
 import figlet from "figlet";
+import { selectMenu, clearScreen, showCursor } from "@/tui";
 
-const games = [
-  {
-    name: "Crazy Eights",
-    value: "crazy_eights",
-    description: "The classic game where eights are wild.",
-  },
-  {
-    name: "Spades",
-    value: "spades",
-    description: "Trick-taking game where spades are always trump.",
-  },
-  new Separator(),
-  { name: "Back", value: "back" },
-];
-
-async function selectGame() {
-  const answer = await select({
-    message: "Select a game:",
-    choices: games,
+async function selectGame(art: string): Promise<void> {
+  const answer = await selectMenu({
+    art,
+    title: "TermiCards",
+    subtitle: "Select a Game",
+    items: [
+      { name: "Crazy Eights", value: "crazy_eights", description: "The classic game where eights are wild." },
+      { name: "Spades",       value: "spades",        description: "Trick-taking game where spades are always trump." },
+      'separator',
+      { name: "Back",         value: "back" },
+    ],
   });
 
   if (answer === "back") return;
 
   try {
     const module = await import(`@/${answer}`);
-
     if (module.default) {
       const game = new module.default();
       await game.play();
@@ -35,34 +26,34 @@ async function selectGame() {
       throw new Error("Game not implemented");
     }
   } catch (error) {
-    console.error(chalk.red(error));
+    clearScreen();
+    process.stdout.write(chalk.red(`\n  Error: ${error}\n\n`));
+    await new Promise((r) => setTimeout(r, 2000));
   }
 }
 
-async function mainMenu() {
+async function main(): Promise<void> {
+  const art = await new Promise<string>((resolve) =>
+    figlet("TermiCards", (_, result) => resolve(result ?? "TermiCards"))
+  );
+
   while (true) {
-    const answer = await select({
-      message: "What would you like to do?",
-      choices: [
+    const answer = await selectMenu({
+      art,
+      title: "TermiCards",
+      items: [
         { name: "New Game", value: "new_game" },
-        new Separator(),
-        { name: "Exit", value: "exit" },
+        'separator',
+        { name: "Exit",     value: "exit" },
       ],
     });
 
     if (answer === "exit") break;
-
-    await selectGame();
+    if (answer === "new_game") await selectGame(art);
   }
-}
 
-function main() {
-  const title = "TermiCards";
-
-  figlet(title, (_, result) => {
-    console.log(chalk.yellow(result ?? title));
-    mainMenu();
-  });
+  clearScreen();
+  showCursor();
 }
 
 main();
