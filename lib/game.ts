@@ -34,5 +34,5 @@ export abstract class Game {
   /**
    * Starts the game.
    */
-  abstract play(): Promise<void>;
+  abstract play(resume?: boolean): Promise<void>;
 }
