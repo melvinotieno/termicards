@@ -65,10 +65,12 @@ export async function selectMenu(options: {
   subtitle?: string;
   items: Array<MenuItem | 'separator'>;
   art?: string;
+  defaultValue?: string;
 }): Promise<string> {
-  const { title, subtitle, items, art } = options;
+  const { title, subtitle, items, art, defaultValue } = options;
   const selectable = items.filter((i): i is MenuItem => i !== 'separator');
-  let cursor = 0;
+  const defaultIdx = defaultValue ? selectable.findIndex(i => i.value === defaultValue) : -1;
+  let cursor = defaultIdx >= 0 ? defaultIdx : 0;
 
   hideCursor();
 
