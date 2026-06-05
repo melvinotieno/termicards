@@ -17,6 +17,8 @@ import {
   deserializeCards,
   type SerializedCard,
 } from "./save";
+import { recordResult } from "./stats";
+import { readSettings, SPEED_MULTIPLIER } from "./settings";
 import {
   clearScreen,
   hideCursor,
@@ -69,6 +71,9 @@ export default class Spades extends Game {
   private selectedCard     = 0;
   private trickComputer: Card | null = null;
   private trickPlayer:   Card | null = null;
+  private speedMult        = 1.0;
+  private highlightPlays   = true;
+  private autoSave         = false;
 
   constructor() {
     super("Spades");
@@ -76,12 +81,25 @@ export default class Spades extends Game {
 
   // ── Entry point ────────────────────────────────────────────────────────────
 
-  async play(): Promise<void> {
+  async play(resume = false): Promise<void> {
+    const settings = await readSettings();
+    this.speedMult      = SPEED_MULTIPLIER[settings.animationSpeed];
+    this.highlightPlays = settings.highlightValidPlays;
+    this.autoSave       = settings.autoSaveOnQuit;
+
     const saved = await readSave<SpadesState>("spades");
 
-    if (saved) {
+    if (resume) {
+      if (saved) {
+        this.restoreState(saved.state);
+        hideCursor();
+        await this.runGameLoop(true);
+        showCursor();
+        return;
+      }
+    } else if (saved) {
       const date = new Date(saved.savedAt).toLocaleString();
-      const resume = await selectMenu({
+      const choice = await selectMenu({
         title: "TermiCards",
         subtitle: "Spades",
         items: [
@@ -90,7 +108,7 @@ export default class Spades extends Game {
         ],
       });
 
-      if (resume === "resume") {
+      if (choice === "resume") {
         this.restoreState(saved.state);
         hideCursor();
         await this.runGameLoop(true);
@@ -142,10 +160,13 @@ export default class Spades extends Game {
 
     await deleteSave("spades");
 
+    const playerWon = this.playerScore > this.computerScore;
+    await recordResult("spades", playerWon ? "win" : "loss", this.playerScore);
+
     clearScreen();
     const b = bar();
     process.stdout.write(`\n  ${chalk.bold.yellow("TermiCards")} ${chalk.dim("─")} ${chalk.cyan("Spades — Game Over")}\n  ${b}\n\n`);
-    if (this.playerScore > this.computerScore) {
+    if (playerWon) {
       process.stdout.write(chalk.bold.green(
         `  You win the game!  Final: You ${this.playerScore} — Computer ${this.computerScore}\n\n`
       ));
@@ -226,6 +247,9 @@ export default class Spades extends Game {
     for (let i = 0; i < remaining; i++) {
       leader = await this.playTrick(leader);
       if (this.quitting) return;
+      if (this.autoSave && i < remaining - 1) {
+        await this.saveState(true);
+      }
     }
 
     if (!this.quitting) {
@@ -351,7 +375,8 @@ export default class Spades extends Game {
 
     for (;;) {
       this.renderBoard(
-        `${chalk.dim("←/→")} Move   ${chalk.dim("Enter")} Lead   ${chalk.dim("S")} Save & Quit`
+        `${chalk.dim("←/→")} Move   ${chalk.dim("Enter")} Lead   ${chalk.dim("S")} Save & Quit`,
+        this.highlightPlays ? validMask : undefined
       );
       const key = await readKey();
 
@@ -384,7 +409,8 @@ export default class Spades extends Game {
 
     for (;;) {
       this.renderBoard(
-        `${chalk.dim("←/→")} Move   ${chalk.dim("Enter")} Play`
+        `${chalk.dim("←/→")} Move   ${chalk.dim("Enter")} Play`,
+        this.highlightPlays ? validMask : undefined
       );
       const key = await readKey();
 
@@ -517,7 +543,7 @@ export default class Spades extends Game {
 
   // ── Rendering ──────────────────────────────────────────────────────────────
 
-  private renderBoard(controls?: string): void {
+  private renderBoard(controls?: string, validMask?: boolean[]): void {
     clearScreen();
     const b = bar();
 
@@ -554,7 +580,7 @@ export default class Spades extends Game {
 
     process.stdout.write("\n  Your hand:\n");
     const cursorIdx = controls !== undefined ? this.selectedCard : undefined;
-    process.stdout.write(renderHand(this.playerHand, undefined, cursorIdx) + "\n");
+    process.stdout.write(renderHand(this.playerHand, validMask, cursorIdx) + "\n");
 
     process.stdout.write(`\n  ${b}\n`);
     if (this.message) {
@@ -579,7 +605,7 @@ export default class Spades extends Game {
   }
 
   private pause(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, Math.round(ms * this.speedMult)));
   }
 
   // ── Compute bid (AI) ───────────────────────────────────────────────────────
@@ -605,7 +631,7 @@ export default class Spades extends Game {
 
   // ── Save / restore ─────────────────────────────────────────────────────────
 
-  private async saveState(): Promise<void> {
+  private async saveState(silent = false): Promise<void> {
     const state: SpadesState = {
       playerHand:       serializeCards(this.playerHand),
       computerHand:     serializeCards(this.computerHand),
@@ -623,12 +649,14 @@ export default class Spades extends Game {
     };
     await writeSave("spades", state);
 
-    clearScreen();
-    const b = bar();
-    process.stdout.write(`\n  ${chalk.bold.yellow("TermiCards")} ${chalk.dim("─")} ${chalk.cyan("Spades")}\n  ${b}\n\n`);
-    process.stdout.write(chalk.green("  Game saved — see you next time!\n\n"));
-    process.stdout.write(`  ${b}\n  ${chalk.dim("Press any key…")}\n`);
-    await readKey();
+    if (!silent) {
+      clearScreen();
+      const b = bar();
+      process.stdout.write(`\n  ${chalk.bold.yellow("TermiCards")} ${chalk.dim("─")} ${chalk.cyan("Spades")}\n  ${b}\n\n`);
+      process.stdout.write(chalk.green("  Game saved — see you next time!\n\n"));
+      process.stdout.write(`  ${b}\n  ${chalk.dim("Press any key…")}\n`);
+      await readKey();
+    }
   }
 
   private restoreState(state: SpadesState): void {
