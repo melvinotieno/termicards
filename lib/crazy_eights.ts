@@ -16,6 +16,8 @@ import {
   deserializeCards,
   type SerializedCard,
 } from "./save";
+import { recordResult } from "./stats";
+import { readSettings, SPEED_MULTIPLIER } from "./settings";
 import {
   clearScreen,
   hideCursor,
@@ -49,17 +51,31 @@ export default class CrazyEights extends Game {
   private quitting = false;
   private message = "";
   private selectedCard = 0;
+  private speedMult = 1.0;
+  private highlightPlays = true;
+  private autoSave = false;
 
   constructor() {
     super("Crazy Eights");
   }
 
-  async play(): Promise<void> {
+  async play(resume = false): Promise<void> {
+    const settings = await readSettings();
+    this.speedMult      = SPEED_MULTIPLIER[settings.animationSpeed];
+    this.highlightPlays = settings.highlightValidPlays;
+    this.autoSave       = settings.autoSaveOnQuit;
+
     const saved = await readSave<CrazyEightsState>("crazy_eights");
 
-    if (saved) {
+    if (resume) {
+      if (saved) {
+        this.restoreState(saved.state);
+      } else {
+        this.setup();
+      }
+    } else if (saved) {
       const date = new Date(saved.savedAt).toLocaleString();
-      const resume = await selectMenu({
+      const choice = await selectMenu({
         title: "TermiCards",
         subtitle: "Crazy Eights",
         items: [
@@ -68,7 +84,7 @@ export default class CrazyEights extends Game {
         ],
       });
 
-      if (resume === "resume") {
+      if (choice === "resume") {
         this.restoreState(saved.state);
       } else {
         await deleteSave("crazy_eights");
@@ -83,6 +99,9 @@ export default class CrazyEights extends Game {
     while (true) {
       if (this.currentPlayer === 0) {
         await this.playerTurn();
+        if (!this.quitting && this.autoSave && this.playerHand.length > 0 && this.computerHand.length > 0) {
+          await this.saveState(true);
+        }
       } else {
         await this.computerTurn();
       }
@@ -95,6 +114,7 @@ export default class CrazyEights extends Game {
         this.render();
         await readKey();
         await deleteSave("crazy_eights");
+        await recordResult("crazy_eights", "win");
         break;
       }
 
@@ -104,6 +124,7 @@ export default class CrazyEights extends Game {
         this.render();
         await readKey();
         await deleteSave("crazy_eights");
+        await recordResult("crazy_eights", "loss");
         break;
       }
 
@@ -139,7 +160,7 @@ export default class CrazyEights extends Game {
     }
 
     process.stdout.write("\n  Your hand:\n");
-    const validMask = this.playerHand.map((c) => this.isValidPlay(c));
+    const validMask = this.highlightPlays ? this.playerHand.map((c) => this.isValidPlay(c)) : undefined;
     const cursorIdx = controls !== undefined ? this.selectedCard : undefined;
     process.stdout.write(renderHand(this.playerHand, validMask, cursorIdx) + "\n");
 
@@ -369,12 +390,12 @@ export default class CrazyEights extends Game {
   }
 
   private pause(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, Math.round(ms * this.speedMult)));
   }
 
   // ── Save / restore ─────────────────────────────────────────────────────────
 
-  private async saveState(): Promise<void> {
+  private async saveState(silent = false): Promise<void> {
     const state: CrazyEightsState = {
       playerHand:   serializeCards(this.playerHand),
       computerHand: serializeCards(this.computerHand),
@@ -383,9 +404,11 @@ export default class CrazyEights extends Game {
       currentSuit:  this.currentSuit,
     };
     await writeSave("crazy_eights", state);
-    this.message = chalk.green("Game saved — see you next time");
-    this.render();
-    await this.pause(1200);
+    if (!silent) {
+      this.message = chalk.green("Game saved — see you next time");
+      this.render();
+      await this.pause(1200);
+    }
   }
 
   private restoreState(state: CrazyEightsState): void {
